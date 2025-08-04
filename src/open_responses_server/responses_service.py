@@ -16,6 +16,141 @@ conversation_history: Dict[str, List[Dict[str, Any]]] = {}
 def current_timestamp() -> int:
     return int(time.time())
 
+def convert_chat_completions_to_responses(chat_response: dict, chat_request: dict = None) -> dict:
+    """
+    Convert a chat completions response to responses API format.
+    """
+    response_id = f"resp_{uuid.uuid4().hex}"
+    message_id = f"msg_{uuid.uuid4().hex}"
+    reasoning_id = f"rs_{uuid.uuid4().hex}"
+    
+    # Extract content from the first choice
+    choice = chat_response.get("choices", [])[0] if chat_response.get("choices") else {}
+    message = choice.get("message", {})
+    content = message.get("content", "")
+    
+    # Extract reasoning content if available
+    reasoning_content = ""
+    reasoning_summary = ""
+    
+    # Check multiple possible locations for reasoning content
+    # 1. In the message object
+    if hasattr(message, 'reasoning_content') and message.reasoning_content:
+        reasoning_content = message.reasoning_content
+    elif message.get("reasoning_content"):
+        reasoning_content = message["reasoning_content"]
+    # 2. In the choice object  
+    elif choice.get("reasoning_content"):
+        reasoning_content = choice["reasoning_content"]
+    # 3. In the chat response root (some models put it there)
+    elif chat_response.get("reasoning_content"):
+        reasoning_content = chat_response["reasoning_content"]
+    # 4. Look for reasoning in the message content itself
+    elif message.get("content") and isinstance(message["content"], str):
+        # Some models might embed reasoning in special markers
+        msg_content = message["content"]
+        if "<thinking>" in msg_content and "</thinking>" in msg_content:
+            start = msg_content.find("<thinking>") + len("<thinking>")
+            end = msg_content.find("</thinking>")
+            if start < end:
+                reasoning_content = msg_content[start:end].strip()
+                # Remove thinking tags from the actual content
+                content = msg_content.replace(f"<thinking>{reasoning_content}</thinking>", "").strip()
+    
+    if reasoning_content:
+        reasoning_summary = reasoning_content[:200] + "..." if len(reasoning_content) > 200 else reasoning_content
+        logger.info(f"Extracted reasoning content for non-streaming: {len(reasoning_content)} chars")
+    
+    # Build output array
+    output_items = []
+    
+    # Add reasoning item if we have reasoning content
+    if reasoning_content:
+        output_items.append({
+            "id": reasoning_id,
+            "type": "reasoning",
+            "summary": [
+                {
+                    "type": "summary_text",
+                    "text": reasoning_summary
+                }
+            ],
+            "content": [
+                {
+                    "type": "reasoning_text",
+                    "text": reasoning_content
+                }
+            ]
+        })
+    
+    # Add message item
+    output_items.append({
+        "id": message_id,
+        "type": "message",
+        "status": "completed",
+        "content": [
+            {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": content
+            }
+        ],
+        "role": "assistant"
+    })
+    
+    # Create the response object
+    response_obj = {
+        "id": response_id,
+        "object": "response",
+        "created_at": current_timestamp(),
+        "status": "completed",
+        "background": False,
+        "error": None,
+        "incomplete_details": None,
+        "instructions": None,
+        "max_output_tokens": None,
+        "max_tool_calls": None,
+        "model": chat_response.get("model", ""),
+        "output": output_items,
+        "parallel_tool_calls": True,
+        "previous_response_id": None,
+        "prompt_cache_key": None,
+        "reasoning": {
+            "effort": None,
+            "summary": None
+        },
+        "safety_identifier": None,
+        "service_tier": "default",
+        "store": True,
+        "temperature": 1.0,
+        "text": {
+            "format": {
+                "type": "text"
+            }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_logprobs": 0,
+        "top_p": 1.0,
+        "truncation": "disabled",
+        "usage": chat_response.get("usage"),
+        "user": None,
+        "metadata": {}
+    }
+    
+    # Save conversation history if we have chat_request
+    if chat_request and content:
+        messages = chat_request.get("messages", [])
+        messages.append({
+            "role": "assistant",
+            "content": content
+        })
+        conversation_history[response_id] = messages
+        logger.info(f"Saved conversation history for response_id {response_id} with {len(messages)} messages")
+    
+    return response_obj
+
 def validate_message_sequence(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Validate and fix the message sequence to ensure tool messages have preceding assistant messages with tool_calls.
@@ -323,7 +458,9 @@ async def process_chat_completions_stream(response, chat_request=None):
     response_id = f"resp_{uuid.uuid4().hex}"
     tool_call_counter = 0
     message_id = f"msg_{uuid.uuid4().hex}"
+    reasoning_item_id = f"rs_{uuid.uuid4().hex}"  # Consistent reasoning ID
     output_text_content = ""  # Track the full text content for logging
+    reasoning_content = ""   # Accumulate reasoning_content from deltas
     logger.info(f"Processing streaming response from chat.completions API response_id {response_id}; message_id {message_id}")
     
     # Create and yield the initial response.created event
@@ -363,15 +500,54 @@ async def process_chat_completions_stream(response, chat_request=None):
                 
                 # If we haven't already completed the response, do it now
                 if response_obj.status != "completed":
-                    # If no output, add empty message
-                    if not response_obj.output:
-                        response_obj.output.append({
+                    # Build output array with reasoning and message
+                    output_items = []
+                    
+                    # Add reasoning item if we have reasoning content
+                    if reasoning_content.strip():
+                        reasoning_summary = reasoning_content[:200] + "..." if len(reasoning_content) > 200 else reasoning_content
+                        
+                        # Emit reasoning text done event
+                        reasoning_done_event = {
+                            "type": "response.reasoning_text.done",
+                            "sequence_number": 1,
+                            "item_id": reasoning_item_id,
+                            "output_index": 0,
+                            "content_index": 0,
+                            "text": reasoning_content.strip()
+                        }
+                        
+                        logger.info(f"Emitting reasoning done event on [DONE]")
+                        yield f"data: {json.dumps(reasoning_done_event)}\n\n"
+                        
+                        # Add reasoning to output
+                        output_items.append({
+                            "id": reasoning_item_id,
+                            "type": "reasoning",
+                            "summary": [
+                                {
+                                    "type": "summary_text",
+                                    "text": reasoning_summary
+                                }
+                            ],
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": reasoning_content.strip()
+                                }
+                            ]
+                        })
+
+                    # Add message item if we have content
+                    if output_text_content or not output_items:
+                        output_items.append({
                             "id": message_id,
                             "type": "message",
                             "role": "assistant",
-                            "content": [{"type": "output_text", "text": f"{output_text_content}\n\n" or "Done"}]
+                            "content": [{"type": "output_text", "text": output_text_content or "Done"}]
                         })
                     
+                    response_obj.output = output_items
                     response_obj.status = "completed"
                     completed_event = ResponseCompleted(
                         type="response.completed",
@@ -424,6 +600,24 @@ async def process_chat_completions_stream(response, chat_request=None):
                     # Process delta
                     if "delta" in choice:
                         delta = choice["delta"]
+
+                        # Capture reasoning content fragments (custom Harmony/vLLM key)
+                        if "reasoning_content" in delta and delta["reasoning_content"] is not None:
+                            reasoning_delta = delta["reasoning_content"]
+                            reasoning_content += reasoning_delta
+                            
+                            # Emit reasoning text delta event
+                            reasoning_delta_event = {
+                                "type": "response.reasoning_text.delta",
+                                "sequence_number": 1,
+                                "item_id": reasoning_item_id,
+                                "output_index": 0,
+                                "content_index": 0,
+                                "delta": reasoning_delta
+                            }
+                            
+                            logger.info(f"Emitting reasoning delta: {reasoning_delta[:50]}...")
+                            yield f"data: {json.dumps(reasoning_delta_event)}\n\n"
 
                         # Handle OpenAI 'function_call' style deltas
                         if "function_call" in delta:
@@ -549,6 +743,26 @@ async def process_chat_completions_stream(response, chat_request=None):
                             
                             yield f"data: {json.dumps(text_event.dict())}\n\n"
                     
+                                            # Capture reasoning_content that appears in full message objects (usually last chunk)
+                        if "message" in choice:
+                            full_msg = choice["message"]
+                            if "reasoning_content" in full_msg and full_msg["reasoning_content"] is not None:
+                                reasoning_delta = full_msg["reasoning_content"]
+                                reasoning_content += reasoning_delta
+                                
+                                # Emit reasoning text delta event for full message reasoning
+                                reasoning_delta_event = {
+                                    "type": "response.reasoning_text.delta",
+                                    "sequence_number": 1,
+                                    "item_id": reasoning_item_id,
+                                    "output_index": 0,
+                                    "content_index": 0,
+                                    "delta": reasoning_delta
+                                }
+                                
+                                logger.info(f"Emitting reasoning delta from full message: {reasoning_delta[:50]}...")
+                                yield f"data: {json.dumps(reasoning_delta_event)}\n\n"
+
                     if "finish_reason" in choice and choice["finish_reason"] is not None:
                         logger.info(f"Received finish_reason: {choice['finish_reason']}")
                         
@@ -829,25 +1043,58 @@ async def process_chat_completions_stream(response, chat_request=None):
                         # If the finish reason is "stop", emit the completed event
                         if choice["finish_reason"] == "stop":
                             logger.info("Received stop finish reason")
-                            # If we have any text content, add it to the output
-                            if not response_obj.output:
-                                response_obj.output.append({
-                                    "id": message_id,
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": [{"type": "output_text", "text": f"{output_text_content}\n\n" or "Done"}]
+                            
+                            # Build output array with reasoning and message
+                            output_items = []
+                            
+                            # Add reasoning item if we have reasoning content
+                            if reasoning_content.strip():
+                                reasoning_summary = reasoning_content[:200] + "..." if len(reasoning_content) > 200 else reasoning_content
+                                
+                                # Emit reasoning text done event
+                                reasoning_done_event = {
+                                    "type": "response.reasoning_text.done",
+                                    "sequence_number": 1,
+                                    "item_id": reasoning_item_id,
+                                    "output_index": 0,
+                                    "content_index": 0,
+                                    "text": reasoning_content.strip()
+                                }
+                                
+                                logger.info(f"Emitting reasoning done event")
+                                yield f"data: {json.dumps(reasoning_done_event)}\n\n"
+                                
+                                # Add reasoning to output
+                                output_items.append({
+                                    "id": reasoning_item_id,
+                                    "type": "reasoning",
+                                    "summary": [
+                                        {
+                                            "type": "summary_text",
+                                            "text": reasoning_summary
+                                        }
+                                    ],
+                                    "content": [
+                                        {
+                                            "type": "reasoning_text",
+                                            "text": reasoning_content.strip()
+                                        }
+                                    ]
                                 })
+                            
+                            # Add message item
+                            output_items.append({
+                                "id": message_id,
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": output_text_content or "Done"}]
+                            })
                             
                             # Log complete output text
                             logger.info(f"Response completed with text: {output_text_content[:100]}...\n\n")
                                 
                             response_obj.status = "completed"
-                            response_obj.output= [{
-                                "id": message_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "content": [{"type": "output_text", "text": output_text_content or "(No update)"}]
-                            }]
+                            response_obj.output = output_items
                             completed_event = ResponseCompleted(
                                 type="response.completed",
                                 response=response_obj

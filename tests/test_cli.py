@@ -79,7 +79,6 @@ class TestCLI:
                     assert "API_ADAPTER_PORT=9000" in env_content
                     assert "OPENAI_BASE_URL_INTERNAL=http://test-internal:8000" in env_content
                     assert "OPENAI_BASE_URL=http://test-external:8080" in env_content
-                    assert "OPENAI_API_KEY=test-api-key" in env_content
             finally:
                 # Change back to original directory
                 os.chdir(original_dir)

@@ -2,7 +2,7 @@ import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse, Response, JSONResponse
 from open_responses_server.common.llm_client import LLMClient
-from open_responses_server.common.config import logger, OPENAI_BASE_URL_INTERNAL, OPENAI_API_KEY, MAX_TOOL_CALL_ITERATIONS
+from open_responses_server.common.config import logger, OPENAI_BASE_URL_INTERNAL, MAX_TOOL_CALL_ITERATIONS, ENABLE_MCP_TOOLS
 from open_responses_server.common.mcp_manager import mcp_manager, serialize_tool_result
 
 async def _handle_non_streaming_request(client: LLMClient, request_data: dict):
@@ -203,7 +203,7 @@ async def handle_chat_completions(request: Request):
     
     # Inject MCP tools into the request
     mcp_tools = mcp_manager.get_mcp_tools()
-    if mcp_tools:
+    if mcp_tools and ENABLE_MCP_TOOLS:
         existing_tools = request_data.get("tools", [])
         existing_tool_names = {tool.get("function", {}).get("name") for tool in existing_tools}
         
@@ -221,7 +221,7 @@ async def handle_chat_completions(request: Request):
         logger.info(f"[CHAT-COMPLETIONS] Added {len(added_tools)} MCP tools: {added_tools}")
         logger.info(f"[CHAT-COMPLETIONS] Final tool count: {len(existing_tools)}")
     else:
-        logger.info("[CHAT-COMPLETIONS] No MCP tools available to inject")
+        logger.info("[CHAT-COMPLETIONS] No MCP tools available to inject or MCP tools disabled.")
     
     logger.debug(f"[CHAT-COMPLETIONS] Final tools in request: {request_data.get('tools', [])}")
 

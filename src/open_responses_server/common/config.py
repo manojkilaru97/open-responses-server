@@ -10,7 +10,6 @@ load_dotenv()
 # API and Server Configuration
 OPENAI_BASE_URL_INTERNAL = os.environ.get("OPENAI_BASE_URL_INTERNAL", "http://localhost:8000")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "dummy-key")
 API_ADAPTER_HOST = os.environ.get("API_ADAPTER_HOST", "0.0.0.0")
 API_ADAPTER_PORT = int(os.environ.get("API_ADAPTER_PORT", "8080"))
 
@@ -22,6 +21,13 @@ MCP_SERVERS_CONFIG_PATH = os.environ.get("MCP_SERVERS_CONFIG_PATH", "src/open_re
 MAX_CONVERSATION_HISTORY = int(os.environ.get("MAX_CONVERSATION_HISTORY", "100"))
 MAX_TOOL_CALL_ITERATIONS = int(os.environ.get("MAX_TOOL_CALL_ITERATIONS", "25"))
 
+# Flag to control whether MCP tools should be injected into outbound OpenAI-compatible calls.
+# This is useful for back-ends like vLLM that return a 400 error when the request contains
+# tool definitions but the server was not started with --enable-auto-tool-choice.
+# Set ENABLE_MCP_TOOLS=true to keep the current behaviour, or leave it unset/false to disable
+# tool injection.
+ENABLE_MCP_TOOLS = os.environ.get("ENABLE_MCP_TOOLS", "false").lower() in ("1", "true", "yes")
+
 
 # --- Logging Configuration ---
 
@@ -31,8 +37,12 @@ def setup_logging():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
         
+    # Allow overriding log level via env var (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, log_level_str, logging.INFO)
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(os.path.join(log_dir, "api_adapter.log")),
@@ -40,7 +50,7 @@ def setup_logging():
         ]
     )
     logger = logging.getLogger("api_adapter")
-    logger.info("Logging configured.")
+    logger.info(f"Logging configured. Level={logging.getLevelName(level)}")
     return logger
 
 # Initialize logging

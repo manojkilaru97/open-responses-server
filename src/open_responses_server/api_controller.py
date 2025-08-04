@@ -1,12 +1,13 @@
 import json
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from open_responses_server.common.config import logger
+from open_responses_server.common.config import ENABLE_MCP_TOOLS
 from open_responses_server.common.llm_client import startup_llm_client, shutdown_llm_client, LLMClient
 from open_responses_server.common.mcp_manager import mcp_manager
-from open_responses_server.responses_service import convert_responses_to_chat_completions, process_chat_completions_stream
+from open_responses_server.responses_service import convert_responses_to_chat_completions, process_chat_completions_stream, convert_chat_completions_to_responses
 from open_responses_server.chat_completions_service import handle_chat_completions
 
 app = FastAPI(
@@ -51,36 +52,13 @@ async def create_response(request: Request):
         # Log basic request information
         logger.info(f"Received request: model={request_data.get('model')}, stream={request_data.get('stream')}")
         
-        # Log input content for better visibility
+        # Log basic input summary
         if "input" in request_data and request_data["input"]:
-            logger.info("==== REQUEST CONTENT ====")
-            #     "input": [{"role": "user", "content": [{"type": "input_text", "text": "save a file with \"demo2\" text called \"demo2.md\""}], "type": "message"}],
-            for i, item in enumerate(request_data["input"]):
-                if isinstance(item, dict):
-                    if item.get("type") == "message" and item.get("role") == "user":
-                        if "content" in item and isinstance(item["content"], list):
-                            for index, content_item in enumerate(item["content"]):
-                                if isinstance(content_item, dict):
-                                    # Handle nested content structure like {"type": "input_text", "text": "actual message"}
-                                    if content_item.get("type") == "input_text" and "text" in content_item:
-                                        user_text = content_item.get("text", "")
-                                        logger.info(f"USER INPUT: {user_text}")
-                                    elif content_item.get("type") == "text" and "text" in content_item:
-                                        user_text = content_item.get("text", "")
-                                        logger.info(f"USER INPUT: {user_text}")
-                                    # Handle other content types
-                                    elif "type" in content_item:
-                                        logger.info(f"USER INPUT ({content_item.get('type')}): {str(content_item)[:100]}...")
-                                elif isinstance(content_item, str):
-                                    logger.info(f"USER INPUT: {content_item}")
-                    elif item.get("type") == "function_call_output":
-                        logger.info(f"FUNCTION RESULT: call_id={item.get('call_id')}, output={str(item.get('output', ''))[:100]}...")
-                elif isinstance(item, str):
-                    logger.info(f"USER INPUT: {item}")
-            logger.info("=======================")
+            input_count = len(request_data["input"])
+            logger.info(f"Processing {input_count} input item(s)")
         
         # Inject cached MCP tools into request_data before conversion so conversion sees them
-        if mcp_manager.mcp_functions_cache:
+        if mcp_manager.mcp_functions_cache and ENABLE_MCP_TOOLS:
             # Get existing tools from request_data or initialize empty list
             existing_tools = request_data.get("tools", [])
             
@@ -102,19 +80,15 @@ async def create_response(request: Request):
             # Append filtered MCP tools to existing tools, keeping existing tools first (priority)
             request_data["tools"] = existing_tools + filtered_mcp_tools
             
-            logger.info(f"[TOOL-INJECT] /responses: {len(existing_tools)} existing tools, {len(mcp_manager.mcp_functions_cache)} MCP tools available")
-            logger.info(f"[TOOL-INJECT] /responses: existing tool names: {list(existing_tool_names)}")
-            logger.info(f"[TOOL-INJECT] /responses: available MCP tools: {[t['name'] for t in mcp_tools]}")
-            logger.info(f"[TOOL-INJECT] /responses: filtered {len(filtered_mcp_tools)} MCP tools to inject: {[t['name'] for t in filtered_mcp_tools]}")
-            logger.info(f"[TOOL-INJECT] /responses: final tool count: {len(request_data['tools'])}")
+            logger.info(f"Injected {len(filtered_mcp_tools)} MCP tools into request (total: {len(request_data['tools'])} tools)")
         else:
-            logger.info("[TOOL-INJECT] /responses: no MCP tools available in cache")
+            logger.info("No MCP tools available or disabled")
         
         # Convert request to chat.completions format
         chat_request = convert_responses_to_chat_completions(request_data)
         
         # Inject cached MCP tool definitions
-        if mcp_manager.mcp_functions_cache:
+        if mcp_manager.mcp_functions_cache and ENABLE_MCP_TOOLS:
             # Keep any existing functions and merge with MCP functions
             existing_functions = chat_request.get("functions", [])
             
@@ -152,11 +126,9 @@ async def create_response(request: Request):
             # Remove the functions key as we've converted to tools format
             chat_request.pop("functions", None)
             
-            logger.info(f"[TOOL-CONVERT] /responses: converted {len(existing_functions)} existing functions to tools format")
-            logger.info(f"[TOOL-CONVERT] /responses: added {len(mcp_tools_added)} MCP tools: {mcp_tools_added}")
-            logger.info(f"[TOOL-CONVERT] /responses: final chat_request tools count: {len(chat_request.get('tools', []))}")
+            logger.info(f"Converted {len(existing_functions)} functions, added {len(mcp_tools_added)} MCP tools to chat request")
         else:
-            logger.info("[TOOL-CONVERT] /responses: no MCP functions cached, sending without MCP tools")
+            logger.info("No MCP functions cached or MCP tools disabled")
         
         # Remove tool_choice when no functions/tools are provided
         if not chat_request.get("functions") and not chat_request.get("tools"):
@@ -173,77 +145,7 @@ async def create_response(request: Request):
             # Handle streaming response
             async def stream_response():
                 try:
-                    # Fetch available MCP tools and format as functions for chat.completions
-                    mcp_functions = []
-                    for server in mcp_manager.mcp_servers:
-                        try:
-                            for t in await server.list_tools():
-                                mcp_functions.append({
-                                    "name": t["name"],
-                                    "description": t.get("description"),
-                                    "parameters": t.get("parameters", {}),
-                                })
-                        except Exception as e:
-                            logger.warning(f"Error listing tools from {server.name}: {e}")
-                    # Only include functions if we have them
-                    if mcp_functions:
-                        # Convert to the "tools" format which is more broadly supported
-                        existing_tools = chat_request.get("tools", [])
-                        existing_functions = chat_request.get("functions", [])
-                        
-                        # Convert any existing functions to tools format
-                        for func in existing_functions:
-                            existing_tools.append({
-                                "type": "function",
-                                "function": func
-                            })
-                        
-                        # Get the names of existing tools to avoid duplicates
-                        existing_tool_names = set()
-                        for tool in existing_tools:
-                            if isinstance(tool, dict) and "function" in tool and "name" in tool["function"]:
-                                existing_tool_names.add(tool["function"]["name"])
-                            elif isinstance(tool, dict) and "name" in tool:
-                                existing_tool_names.add(tool["name"])
-                        
-                        # Only add MCP functions that don't conflict with existing tools
-                        for func in mcp_functions:
-                            if func["name"] not in existing_tool_names:
-                                existing_tools.append({
-                                    "type": "function",
-                                    "function": func
-                                })
-                            
-                        # Set the tools and remove functions
-                        chat_request["tools"] = existing_tools
-                        chat_request.pop("functions", None)
-                        
-                        logger.info(f"Converted {len(existing_functions)} existing functions and {len(mcp_functions)} MCP functions to tools format")
-                    elif "functions" in chat_request:
-                        # Convert any existing functions to tools format
-                        existing_tools = chat_request.get("tools", [])
-                        existing_functions = chat_request.get("functions", [])
-                        
-                        if existing_functions:
-                            # Convert functions to tools format
-                            for func in existing_functions:
-                                existing_tools.append({
-                                    "type": "function",
-                                    "function": func
-                                })
-                                
-                            chat_request["tools"] = existing_tools
-                            logger.info(f"Converted {len(existing_functions)} existing functions to tools format")
-                        
-                        # Remove the functions key regardless
-                        chat_request.pop("functions", None)
-                        
-                        if not chat_request.get("tools"):
-                            # If we don't have any tools either, remove that key
-                            chat_request.pop("tools", None)
-                            logger.info("No tools or functions available, sending without them")
-                    # Log the initial Chat Completions request payload
-                    logger.info(f"Sending Chat Completions request: {json.dumps(chat_request)}")
+                    logger.info(f"Sending chat completions request with {len(chat_request.get('messages', []))} messages")
                     client = await LLMClient.get_client()
                     async with client.stream(
                         "POST",
@@ -271,7 +173,28 @@ async def create_response(request: Request):
             )
         
         else:
-            logger.info("Non-streaming response unsupported")
+            logger.info("Handling non-streaming response")
+            # Handle non-streaming response
+            try:
+                client = await LLMClient.get_client()
+                response = await client.post(
+                    "/v1/chat/completions",
+                    json=chat_request,
+                    timeout=120.0
+                )
+                response.raise_for_status()
+                response_data = response.json()
+                
+                # Convert chat completions response to responses API format
+                responses_response = convert_chat_completions_to_responses(response_data, chat_request)
+                return JSONResponse(content=responses_response)
+                
+            except Exception as e:
+                logger.error(f"Error in non-streaming response: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error processing non-streaming request: {str(e)}"
+                )
             
     except Exception as e:
         logger.error(f"Error in create_response: {str(e)}")
@@ -279,91 +202,6 @@ async def create_response(request: Request):
             status_code=500,
             detail=f"Error processing request: {str(e)}"
         )
-
-# @app.post("/responses")
-#async def create_response(request: Request):
-#    """
-#    Endpoint for the custom /responses API.
-#    Converts the request, calls the chat completions endpoint, and streams the converted response.
-#    """
-#    try:
-#        request_data = await request.json()
-#        
-#        # Log basic request information
-#        logger.info(f"Received request: model={request_data.get('model')}, stream={request_data.get('stream')}")
-#        
-#        # Log input content for better visibility
-#        if "input" in request_data and request_data["input"]:
-#            logger.info("==== REQUEST CONTENT ====")
-#            for i, item in enumerate(request_data["input"]):
-#                if isinstance(item, dict):
-#                    if item.get("type") == "message" and item.get("role") == "user":
-#                        if "content" in item and isinstance(item["content"], list):
-#                            for index, content_item in enumerate(item["content"]):
-#                                if isinstance(content_item, dict):
-                                    # Handle nested content structure like {"type": "input_text", "text": "actual message"}
-#                                    if content_item.get("type") == "input_text" and "text" in content_item:
-#                                        user_text = content_item.get("text", "")
-#                                        logger.info(f"USER INPUT: {user_text}")
-#                                    elif content_item.get("type") == "text" and "text" in content_item:
-#                                        user_text = content_item.get("text", "")
-#                                        logger.info(f"USER INPUT: {user_text}")
-#                                    # Handle other content types
-#                                    elif "type" in content_item:
-#                                        logger.info(f"USER INPUT ({content_item.get('type')}): {str(content_item)[:100]}...")
-#                                elif isinstance(content_item, str):
-#                                    logger.info(f"USER INPUT: {content_item}")
-#                    elif item.get("type") == "function_call_output":
-#                        logger.info(f"FUNCTION RESULT: call_id={item.get('call_id')}, output={str(item.get('output', ''))[:100]}...")
-#                elif isinstance(item, str):
-#                    logger.info(f"USER INPUT: {item}")
-#            logger.info("=======================")
-
-#        # Inject MCP tools into the request before conversion
-#        mcp_tools = mcp_manager.get_mcp_tools()
-#        if mcp_tools:
-#            # Start with user-provided tools, or an empty list
-#            final_tools = request_data.get("tools", [])
-            
-#            # Get the names of the tools already in the list
-#            final_tool_names = {
-#                tool.get("function", {}).get("name") if tool.get("function") else tool.get("name")
-#                for tool in final_tools
-#                if (tool.get("function") and tool.get("function").get("name")) or tool.get("name")
-#            }
-            
-#            # Add only the new MCP tools that don't conflict
-#            for tool in mcp_tools:
-#                if tool.get("name") not in final_tool_names:
-#                    final_tools.append({"type": "function", "function": tool})
-            
-#            request_data["tools"] = final_tools
-#            logger.info(f"Injected {len(mcp_tools)} MCP tools into request")
-
-#        chat_request = convert_responses_to_chat_completions(request_data)
-        
-#        client = await LLMClient.get_client()
-        
-#        async def stream_response():
-#            try:
-#                async with client.stream("POST", "/v1/chat/completions", json=chat_request, timeout=120.0) as response:
-#                    if response.status_code != 200:
-#                        error_content = await response.aread()
-#                        logger.error(f"Error from LLM API: {error_content.decode()}")
-#                        yield f"data: {json.dumps({'error': 'LLM API Error'})}\n\n"
-#                        return
-                    
-#                    async for event in process_chat_completions_stream(response, chat_request):
-#                        yield event
-#            except Exception as e:
-#                logger.error(f"Error in /responses stream: {e}")
-#                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        
-#        return StreamingResponse(stream_response(), media_type="text/event-stream")
-
-#    except Exception as e:
-#        logger.error(f"Error in create_response endpoint: {e}")
-#        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/v1/chat/completions")
@@ -383,7 +221,17 @@ async def chat_completions(request: Request):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "adapter": "running"}
+    """Return health of adapter and underlying LLM backend."""
+    from open_responses_server.common.llm_client import LLMClient
+    llm_up = False
+    try:
+        client = await LLMClient.get_client()
+        resp = await client.get("/v1/models", timeout=5.0)
+        llm_up = resp.status_code == 200
+    except Exception:
+        llm_up = False
+    overall = "ok" if llm_up else "degraded"
+    return {"status": overall, "adapter": "running", "llm_backend": llm_up}
 
 @app.get("/")
 async def root():
@@ -421,4 +269,4 @@ async def proxy_endpoint(request: Request, path_name: str):
             
     except Exception as e:
         logger.error(f"Error in proxy endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Error proxying request: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error proxying request: {str(e)}")

@@ -50,8 +50,7 @@ def temp_env_file(tmp_path):
         "API_ADAPTER_HOST": "127.0.0.1",
         "API_ADAPTER_PORT": str(find_available_port()),
         "OPENAI_BASE_URL_INTERNAL": "http://localhost:8000",
-        "OPENAI_BASE_URL": "http://localhost:8080",
-        "OPENAI_API_KEY": "test-api-key"
+        "OPENAI_BASE_URL": "http://localhost:8080"
     }
     
     # Write environment variables to file

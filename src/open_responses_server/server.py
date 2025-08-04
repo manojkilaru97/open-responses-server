@@ -53,7 +53,6 @@ logger = logging.getLogger("api_adapter")
 # Configuration from environment variables
 OPENAI_BASE_URL_INTERNAL = os.environ.get("OPENAI_BASE_URL_INTERNAL", "http://localhost:8000")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "dummy-key")
 API_ADAPTER_HOST = os.environ.get("API_ADAPTER_HOST", "0.0.0.0")
 API_ADAPTER_PORT = int(os.environ.get("API_ADAPTER_PORT", "8080"))
 
@@ -73,7 +72,7 @@ app.add_middleware(
 # HTTP client for making requests to the LLM API
 http_client = httpx.AsyncClient(
     base_url=OPENAI_BASE_URL_INTERNAL,  # Fixed: using the actual variable
-    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+    headers={"Content-Type": "application/json"},
     timeout=httpx.Timeout(120.0)  # Increased timeout
 )
 
@@ -521,6 +520,8 @@ def convert_responses_to_chat_completions(request_data: dict) -> dict:
     
     logger.info(f"Converted to chat completions: {len(messages)} messages, {len(chat_request.get('tools', []))} tools")
     return chat_request
+
+
 
 async def process_chat_completions_stream(response, chat_request=None):
     """
@@ -1272,9 +1273,6 @@ async def proxy_endpoint(request: Request, path_name: str):
         headers = {k.lower(): v for k, v in request.headers.items() if k.lower() != 'host'}
         
         # Make sure we have authorization header
-        if 'authorization' not in headers and OPENAI_API_KEY:
-            headers['authorization'] = f'Bearer {OPENAI_API_KEY}'
-            
         logger.info(f"Proxying request to {path_name}")
         
         # Determine if this is a streaming request

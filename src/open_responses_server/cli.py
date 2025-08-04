@@ -88,7 +88,6 @@ def configure_server():
     env_vars["API_ADAPTER_PORT"] = str(port)
     env_vars["OPENAI_BASE_URL_INTERNAL"] = openai_internal
     env_vars["OPENAI_BASE_URL"] = openai_external
-    env_vars["OPENAI_API_KEY"] = api_key
 
     # Write configuration to .env file
     with open(env_file_path, "w") as f:
