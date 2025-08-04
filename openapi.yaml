@@ -124,14 +124,23 @@ paths:
                   "stream": <%- request.stream %>
                 })
 
-                <% if (request.stream) { %>
-                for chunk in response:
-                  if chunk.delta and chunk.delta.output:
-                    for output_item in chunk.delta.output:
-                      for content in output_item.content:
-                        if content.type == "text":
-                          print(content.text, end="")
-                <% } else { %>
+                                  <% if (request.stream) { %>
+                  for chunk in response:
+                    # Handle reasoning content streaming
+                    if chunk.get("type") == "response.reasoning_text.delta":
+                      print(f"[Reasoning] {chunk['delta']}", end="")
+                    elif chunk.get("type") == "response.reasoning_text.done":
+                      print(f"\n[Reasoning Complete: {chunk['text']}]\n")
+                    # Handle regular text content streaming  
+                    elif chunk.get("type") == "response.output_text.delta":
+                      print(chunk["delta"], end="")
+                    # Handle structured delta format
+                    elif chunk.delta and chunk.delta.output:
+                      for output_item in chunk.delta.output:
+                        for content in output_item.content:
+                          if content.type == "text":
+                            print(content.text, end="")
+                  <% } else { %>
                 for output_item in response.output:
                   for content in output_item.content:
                     if content.type == "text":
@@ -158,7 +167,18 @@ paths:
 
                   <% if (request.stream) { %>
                   for await (const chunk of response) {
-                    if (chunk.delta && chunk.delta.output) {
+                    // Handle reasoning content streaming
+                    if (chunk.type === "response.reasoning_text.delta") {
+                      process.stdout.write(`[Reasoning] ${chunk.delta}`);
+                    } else if (chunk.type === "response.reasoning_text.done") {
+                      process.stdout.write(`\n[Reasoning Complete: ${chunk.text}]\n`);
+                    } 
+                    // Handle regular text content streaming
+                    else if (chunk.type === "response.output_text.delta") {
+                      process.stdout.write(chunk.delta);
+                    }
+                    // Handle structured delta format
+                    else if (chunk.delta && chunk.delta.output) {
                       for (const outputItem of chunk.delta.output) {
                         for (const content of outputItem.content) {
                           if (content.type === "text") {
@@ -220,6 +240,49 @@ paths:
                   "total_tokens": 27
                 }
               }
+          - name: Streaming reasoning example
+            requestJson: |
+              {
+                "model": "openai/gpt-oss-20b",
+                "input": [
+                  {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                      {
+                        "type": "input_text",
+                        "text": "What is 127 * 83?"
+                      }
+                    ]
+                  }
+                ],
+                "reasoning_effort": "high",
+                "max_output_tokens": 500,
+                "temperature": 0.3,
+                "stream": true
+              }
+            responseJson: |
+              data: {"type": "response.created", "response": {"id": "resp_xyz789", "object": "response", "created_at": 1677652300, "status": "in_progress", "model": "openai/gpt-oss-20b", "output": []}}
+              
+              data: {"type": "response.in_progress", "response": {"id": "resp_xyz789", "object": "response", "created_at": 1677652300, "status": "in_progress", "model": "openai/gpt-oss-20b", "output": []}}
+              
+              data: {"type": "response.reasoning_text.delta", "sequence_number": 1, "item_id": "rs_abc123", "output_index": 0, "content_index": 0, "delta": "I need to calculate 127 × 83. Let me break this down step by step.\n\n"}
+              
+              data: {"type": "response.reasoning_text.delta", "sequence_number": 1, "item_id": "rs_abc123", "output_index": 0, "content_index": 0, "delta": "127 × 83 = 127 × (80 + 3) = (127 × 80) + (127 × 3)\n\n"}
+              
+              data: {"type": "response.reasoning_text.delta", "sequence_number": 1, "item_id": "rs_abc123", "output_index": 0, "content_index": 0, "delta": "127 × 80 = 127 × 8 × 10 = 1016 × 10 = 10,160\n"}
+              
+              data: {"type": "response.reasoning_text.delta", "sequence_number": 1, "item_id": "rs_abc123", "output_index": 0, "content_index": 0, "delta": "127 × 3 = 381\n\n"}
+              
+              data: {"type": "response.reasoning_text.done", "sequence_number": 1, "item_id": "rs_abc123", "output_index": 0, "content_index": 0, "text": "I need to calculate 127 × 83. Let me break this down step by step.\n\n127 × 83 = 127 × (80 + 3) = (127 × 80) + (127 × 3)\n\n127 × 80 = 127 × 8 × 10 = 1016 × 10 = 10,160\n127 × 3 = 381\n\nSo 127 × 83 = 10,160 + 381 = 10,541"}
+              
+              data: {"type": "response.output_text.delta", "item_id": "msg_xyz456", "output_index": 0, "delta": "To calculate 127 × 83:"}
+              
+              data: {"type": "response.output_text.delta", "item_id": "msg_xyz456", "output_index": 0, "delta": "\n\n127 × 83 = 10,541"}
+              
+              data: {"type": "response.completed", "response": {"id": "resp_xyz789", "object": "response", "created_at": 1677652300, "status": "completed", "model": "openai/gpt-oss-20b", "output": [{"id": "msg_xyz456", "type": "message", "role": "assistant", "content": [{"type": "text", "text": "To calculate 127 × 83:\n\n127 × 83 = 10,541"}]}], "reasoning": {"effort": "high", "summary": "Used distributive property to break down multiplication into simpler components"}, "usage": {"prompt_tokens": 8, "completion_tokens": 23, "total_tokens": 31}}}
+              
+              data: [DONE]
   "/chat/completions":
     post:
       operationId: create_chat_completion_v1_chat_completions_post
@@ -1083,25 +1146,205 @@ components:
       title: OutputContentItem
       type: object
     ResponsesStreamChunk:
+      anyOf:
+        - "$ref": "#/components/schemas/ResponseCreatedEvent"
+        - "$ref": "#/components/schemas/ResponseInProgressEvent"
+        - "$ref": "#/components/schemas/ResponseCompletedEvent"
+        - "$ref": "#/components/schemas/ReasoningTextDeltaEvent"
+        - "$ref": "#/components/schemas/ReasoningTextDoneEvent"
+        - "$ref": "#/components/schemas/OutputTextDeltaEvent"
+        - "$ref": "#/components/schemas/ToolCallsCreatedEvent"
+        - "$ref": "#/components/schemas/FunctionCallArgumentsDeltaEvent"
+        - "$ref": "#/components/schemas/FunctionCallArgumentsDoneEvent"
+      title: ResponsesStreamChunk
+      description: Any of the possible streaming event types from the Responses API
+    ResponseCreatedEvent:
       properties:
+        type:
+          type: string
+          enum: ["response.created"]
+          description: Event type for response creation.
+        response:
+          "$ref": "#/components/schemas/ResponsesResponse"
+          description: The created response object.
+      required:
+        - type
+        - response
+      title: ResponseCreatedEvent
+      type: object
+    ResponseInProgressEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.in_progress"]
+          description: Event type for response processing start.
+        response:
+          "$ref": "#/components/schemas/ResponsesResponse"
+          description: The response object in progress.
+      required:
+        - type
+        - response
+      title: ResponseInProgressEvent
+      type: object
+    ResponseCompletedEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.completed"]
+          description: Event type for response completion.
+        response:
+          "$ref": "#/components/schemas/ResponsesResponse"
+          description: The completed response object.
+      required:
+        - type
+        - response
+      title: ResponseCompletedEvent
+      type: object
+    ReasoningTextDeltaEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.reasoning_text.delta"]
+          description: Event type for streaming reasoning content fragments.
+        sequence_number:
+          type: integer
+          description: Sequence number for ordering events.
+        item_id:
+          type: string
+          description: Unique identifier for the reasoning item.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        content_index:
+          type: integer
+          description: Index of the content within the output.
+        delta:
+          type: string
+          description: The reasoning content fragment.
+      required:
+        - type
+        - sequence_number
+        - item_id
+        - output_index
+        - content_index
+        - delta
+      title: ReasoningTextDeltaEvent
+      type: object
+    ReasoningTextDoneEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.reasoning_text.done"]
+          description: Event type when reasoning is complete.
+        sequence_number:
+          type: integer
+          description: Sequence number for ordering events.
+        item_id:
+          type: string
+          description: Unique identifier for the reasoning item.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        content_index:
+          type: integer
+          description: Index of the content within the output.
+        text:
+          type: string
+          description: The complete reasoning content.
+      required:
+        - type
+        - sequence_number
+        - item_id
+        - output_index
+        - content_index
+        - text
+      title: ReasoningTextDoneEvent
+      type: object
+    OutputTextDeltaEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.output_text.delta"]
+          description: Event type for streaming regular text content.
+        item_id:
+          type: string
+          description: Unique identifier for the output item.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        delta:
+          type: string
+          description: The text content fragment.
+      required:
+        - type
+        - item_id
+        - output_index
+        - delta
+      title: OutputTextDeltaEvent
+      type: object
+    ToolCallsCreatedEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.tool_calls.created"]
+          description: Event type when tool calls are created.
+        item_id:
+          type: string
+          description: Unique identifier for the tool call item.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        tool_call:
+          type: object
+          description: The tool call information.
+      required:
+        - type
+        - item_id
+        - output_index
+        - tool_call
+      title: ToolCallsCreatedEvent
+      type: object
+    FunctionCallArgumentsDeltaEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.function_call_arguments.delta"]
+          description: Event type for streaming function call arguments.
+        item_id:
+          type: string
+          description: Unique identifier for the function call item.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        delta:
+          type: string
+          description: The function arguments fragment.
+      required:
+        - type
+        - item_id
+        - output_index
+        - delta
+      title: FunctionCallArgumentsDeltaEvent
+      type: object
+    FunctionCallArgumentsDoneEvent:
+      properties:
+        type:
+          type: string
+          enum: ["response.function_call_arguments.done"]
+          description: Event type when function call arguments are complete.
         id:
           type: string
-          description: A unique identifier for the response.
-        object:
+          description: Unique identifier for the function call.
+        output_index:
+          type: integer
+          description: Index of the output item.
+        arguments:
           type: string
-          enum: ["response.delta"]
-          description: The object type for streaming chunks.
-        delta:
-          type: object
-          properties:
-            output:
-              type: array
-              items:
-                "$ref": "#/components/schemas/ResponseOutputItem"
-          description: The incremental changes in this chunk.
+          description: The complete function arguments.
       required:
+        - type
         - id
-        - object
-        - delta
-      title: ResponsesStreamChunk
+        - output_index
+        - arguments
+      title: FunctionCallArgumentsDoneEvent
       type: object
