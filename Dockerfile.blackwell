@@ -1,5 +1,5 @@
 
-FROM gitlab-master.nvidia.com:5005/yutwu/vllm-orangina-preview-api:blackwell-harmony-swiglu-clamp-v2
+FROM gitlab-master.nvidia.com:5005/yutwu/vllm-orangina-preview-api:final-blackwell-v1
 # FROM gitlab-master.nvidia.com:5005/yutwu/vllm-orangina-preview-api:tk-mxfp4-v8-hopper-harmony-v2
 #public.ecr.aws/q9t5s3a7/vllm-ci-postmerge-repo:c5b8b5953a2e20e8358d0828aad11d259c073c50
 

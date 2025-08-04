@@ -24,6 +24,8 @@ python3 -m vllm.entrypoints.openai.api_server \
   --max-model-len "${MAX_MODEL_LEN}" \
   --max-num-batched-tokens 1024 \
   --max-num-seqs 128 \
+  --enable-harmony \
+  --detokenizer-fallback \
   --trust-remote-code &
 
 # Wait for vLLM to start
