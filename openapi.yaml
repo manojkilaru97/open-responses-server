@@ -1,0 +1,1107 @@
+openapi: 3.1.0
+info:
+  title: NVIDIA NIM API for openai/gpt-oss-20b
+  description:
+    The NVIDIA NIM REST API. Please see https://docs.api.nvidia.com/nim/reference/openai-gpt-oss-20b
+    for more details.
+  version: 1.0.0
+  termsOfService: https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/
+  contact:
+    name: NVIDIA Enterprise Support
+    url: https://www.nvidia.com/en-us/support/enterprise/
+  license:
+    name: MIT License
+    url: https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE
+servers:
+  - url: https://integrate.api.nvidia.com/v1/
+paths:
+  "/responses":
+    post:
+      operationId: create_response_v1_responses_post
+      tags:
+        - Responses
+      summary: Creates a response for the given conversation using OpenAI Responses API.
+      description:
+        Creates a response using OpenAI's Responses API format. Supports reasoning models
+        with stateful conversation management, tool calls, and advanced reasoning capabilities.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/ResponsesRequest"
+        required: true
+      responses:
+        "200":
+          description: Response created successfully
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ResponsesResponse"
+            text/event-stream:
+              schema:
+                "$ref": "#/components/schemas/ResponsesStreamChunk"
+        "422":
+          description: Validation failed, provided entity could not be processed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Errors"
+        "500":
+          description: The invocation ended with an error.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Errors"
+      x-nvai-meta:
+        name: Create response
+        returns: "Returns a response object or a streamed sequence of response chunks if the request is streamed."
+        path: create
+        examples:
+          - name: Simple reasoning request
+            requestJson: |
+              {
+                "model": "openai/gpt-oss-20b",
+                "input": [
+                  {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                      {
+                        "type": "input_text",
+                        "text": "Solve this step by step: What is 15 * 24?"
+                      }
+                    ]
+                  }
+                ],
+                "reasoning_effort": "medium",
+                "max_output_tokens": 1000,
+                "temperature": 0.7,
+                "stream": false
+              }
+            responseJson: |
+              {
+                "id": "resp_abc123",
+                "object": "response",
+                "created_at": 1677652288,
+                "status": "completed",
+                "model": "openai/gpt-oss-20b",
+                "output": [{
+                  "id": "msg_def456", 
+                  "type": "message",
+                  "role": "assistant",
+                  "content": [{
+                    "type": "text",
+                    "text": "I need to calculate 15 × 24 step by step.\n\n15 × 24 = 15 × (20 + 4) = (15 × 20) + (15 × 4) = 300 + 60 = 360\n\nTherefore, 15 × 24 = 360."
+                  }]
+                }],
+                "reasoning": {
+                  "effort": "medium",
+                  "summary": "Used distributive property to break down multiplication"
+                },
+                "usage": {
+                  "prompt_tokens": 12,
+                  "completion_tokens": 45,
+                  "total_tokens": 57
+                }
+              }
+        templates:
+          - title: Python (Responses API)
+            requestEjs:
+              python: |
+                from openai import OpenAI
+
+                client = OpenAI(
+                  base_url = "https://integrate.api.nvidia.com/v1",
+                  api_key = "$NVIDIA_API_KEY"
+                )
+
+                response = client.post("/responses", json={
+                  "model": "<%- request.model %>",
+                  "input": <%- JSON.stringify(request.input) %>,
+                  <% if (request.reasoning_effort) { %>"reasoning_effort": "<%- request.reasoning_effort %>",<% } %>
+                  "max_output_tokens": <%- request.max_output_tokens %>,
+                  "temperature": <%- request.temperature %>,
+                  "stream": <%- request.stream %>
+                })
+
+                <% if (request.stream) { %>
+                for chunk in response:
+                  if chunk.delta and chunk.delta.output:
+                    for output_item in chunk.delta.output:
+                      for content in output_item.content:
+                        if content.type == "text":
+                          print(content.text, end="")
+                <% } else { %>
+                for output_item in response.output:
+                  for content in output_item.content:
+                    if content.type == "text":
+                      print(content.text)
+                <% } %>
+
+              node.js: |
+                import OpenAI from 'openai';
+
+                const openai = new OpenAI({
+                  apiKey: '$NVIDIA_API_KEY',
+                  baseURL: 'https://integrate.api.nvidia.com/v1',
+                })
+
+                async function main() {
+                  const response = await openai.post('/responses', {
+                    model: "<%- request.model %>",
+                    input: <%- JSON.stringify(request.input) %>,
+                    <% if (request.reasoning_effort) { %>reasoning_effort: "<%- request.reasoning_effort %>",<% } %>
+                    max_output_tokens: <%- request.max_output_tokens %>,
+                    temperature: <%- request.temperature %>,
+                    stream: <%- request.stream %>
+                  });
+
+                  <% if (request.stream) { %>
+                  for await (const chunk of response) {
+                    if (chunk.delta && chunk.delta.output) {
+                      for (const outputItem of chunk.delta.output) {
+                        for (const content of outputItem.content) {
+                          if (content.type === "text") {
+                            process.stdout.write(content.text);
+                          }
+                        }
+                      }
+                    }
+                  }
+                  <% } else { %>
+                  for (const outputItem of response.output) {
+                    for (const content of outputItem.content) {
+                      if (content.type === "text") {
+                        console.log(content.text);
+                      }
+                    }
+                  }
+                  <% } %>
+                }
+
+                main();
+
+              curl: |
+                curl https://integrate.api.nvidia.com/v1/responses \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer $NVIDIA_API_KEY" \
+                  -d '{
+                    "model": "<%- request.model %>",
+                    "input": <%- JSON.stringify(request.input).replaceAll("'", "'\"'\"'") %>,
+                    <% if (request.reasoning_effort) { %>"reasoning_effort": "<%- request.reasoning_effort %>",<% } %>
+                    "max_output_tokens": <%- request.max_output_tokens %>,
+                    "temperature": <%- request.temperature %>,
+                    "stream": <%- request.stream %>
+                  }'
+
+            response: |
+              {
+                "id": "resp_abc123",
+                "object": "response", 
+                "created_at": 1677652288,
+                "status": "completed",
+                "model": "openai/gpt-oss-20b",
+                "output": [{
+                  "id": "msg_def456",
+                  "type": "message", 
+                  "role": "assistant",
+                  "content": [{
+                    "type": "text",
+                    "text": "Hello! I'm an AI assistant created by OpenAI. How can I help you today?"
+                  }]
+                }],
+                "reasoning": {
+                  "effort": "medium",
+                  "summary": null
+                },
+                "usage": {
+                  "prompt_tokens": 8,
+                  "completion_tokens": 19,
+                  "total_tokens": 27
+                }
+              }
+  "/chat/completions":
+    post:
+      operationId: create_chat_completion_v1_chat_completions_post
+      tags:
+        - Chat
+      summary: Creates a model response for the given chat conversation.
+      description:
+        Given a list of messages comprising a conversation, the model will
+        return a response. Compatible with OpenAI. See https://platform.openai.com/docs/api-reference/chat/create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/ChatRequest"
+        required: true
+      responses:
+        "200":
+          description: Invocation is fulfilled
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ChatCompletion"
+            text/event-stream:
+              schema:
+                "$ref": "#/components/schemas/ChatCompletionChunk"
+        "202":
+          description:
+            "Result is pending. Client should poll using the requestId.
+
+            "
+          content:
+            application/json:
+              example: {}
+              schema: {}
+          headers:
+            NVCF-REQID:
+              description: requestId required for pooling
+              schema:
+                type: string
+                format: uuid
+            NVCF-STATUS:
+              description: Invocation status
+              schema:
+                type: string
+        "422":
+          description: Validation failed, provided entity could not be processed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Errors"
+              example:
+                type: urn:nvcf-worker-service:problem-details:unprocessable-entity
+                title: Unprocessable Entity
+                status: 422
+                detail: string
+                instance: "/v2/nvcf/pexec/functions/4a58c6cb-a9b4-4014-99de-3e704d4ae687"
+                requestId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        "500":
+          description: The invocation ended with an error.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Errors"
+              example:
+                type: urn:nvcf-worker-service:problem-details:internal-server-error
+                title: Internal Server Error
+                status: 500
+                detail: string
+                instance: "/v2/nvcf/pexec/functions/4a58c6cb-a9b4-4014-99de-3e704d4ae687"
+                requestId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+      x-nvai-meta:
+        name: Create chat completion
+        returns:
+          "Returns a [chat completion](/docs/api-reference/chat/object) object,
+          or a streamed sequence of [chat completion chunk](/docs/api-reference/chat/streaming)
+          objects if the request is streamed.
+
+          "
+        path: create
+        examples:
+          - name: Which number is larger, 9.11 or 9.8?
+            requestJson: |
+              {
+                    "model": "openai/gpt-oss-20b",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "Which number is larger, 9.11 or 9.8?"
+                      }
+                    ],
+                    "reasoning_effort": "high",
+                    "top_p": 0.7,
+                    "max_tokens": 4096,
+                    "temperature": 0.95,
+                    "stream": true
+              }
+            responseJson: |
+              {
+                "id": "id-123",
+                "object": "chat.completion",
+                "created": 1677652288,
+                "model": "openai/gpt-oss-20b",
+                "system_fingerprint": "fp_44709d6fcb",
+                "choices": [{
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "The number 9.11 is..."
+                  },
+                  "finish_reason": "stop"
+                }],
+                "usage": {
+                  "prompt_tokens": 9,
+                  "completion_tokens": 12,
+                  "total_tokens": 21
+                }
+              }
+          - name: How many 'r's are in 'strawberry'?
+            requestJson: |
+              {
+                    "model": "openai/gpt-oss-20b",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "How many 'r's are in 'strawberry'?"
+                      }
+                    ],
+                    "reasoning_effort": "medium",
+                    "top_p": 0.7,
+                    "max_tokens": 4096,
+                    "temperature": 0.95,
+                    "stream": true
+              }
+            responseJson: |
+              {
+                "id": "id-123",
+                "object": "chat.completion",
+                "created": 1677652288,
+                "model": "openai/gpt-oss-20b",
+                "system_fingerprint": "fp_44709d6fcb",
+                "choices": [{
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "In the word strawberry..."
+                  },
+                  "finish_reason": "stop"
+                }],
+                "usage": {
+                  "prompt_tokens": 9,
+                  "completion_tokens": 12,
+                  "total_tokens": 21
+                }
+              }
+        templates:
+          - title: No Streaming
+            requestEjs:
+              python: |
+                from openai import OpenAI
+
+                client = OpenAI(
+                  base_url = "https://integrate.api.nvidia.com/v1",
+                  api_key = "$NVIDIA_API_KEY"
+                )
+                <% if (request.tools) { %>
+                completion = client.chat.completions.create(
+                  model="<%- request.model %>",
+                  messages=<%- JSON.stringify(request.messages) %>,
+                  temperature=<%- request.temperature %>,
+                  top_p=<%- request.top_p %>,
+                  max_tokens=<%- request.max_tokens %>,
+                  stream=<%- request.stream?.toString()[0].toUpperCase() + request.stream?.toString().slice(1) %>,
+                  tools=<%- JSON.stringify(request.tools) %>,
+                  <% if (request.tool_choice) { %>tool_choice=<%- JSON.stringify(request.tool_choice) %><% } %>
+                )<% } else { %>
+                completion = client.chat.completions.create(
+                  model="<%- request.model %>",
+                  messages=<%- JSON.stringify(request.messages) %>,
+                  temperature=<%- request.temperature %>,
+                  top_p=<%- request.top_p %>,
+                  max_tokens=<%- request.max_tokens %>,
+                  stream=<%- request.stream?.toString()[0].toUpperCase() + request.stream?.toString().slice(1) %>
+                )<% } %>
+                <% if (request.stream) { %>
+                for chunk in completion:
+                  reasoning = getattr(chunk.choices[0].delta, "reasoning_content", None)
+                  if reasoning:
+                    print(reasoning, end="")
+                  if chunk.choices[0].delta.content is not None:
+                    print(chunk.choices[0].delta.content, end="")
+                <% } else { %>
+                reasoning = getattr(completion.choices[0].message, "reasoning_content", None)
+                if reasoning:
+                  print(reasoning)
+                print(completion.choices[0].message.content)
+                <% } %>
+              langChain: |
+                from langchain_nvidia_ai_endpoints import ChatNVIDIA
+
+                client = ChatNVIDIA(
+                  model="<%- request.model %>",
+                  api_key="$NVIDIA_API_KEY", 
+                  temperature=<%- request.temperature %>,
+                  top_p=<%- request.top_p %>,
+                  max_tokens=<%- request.max_tokens %>,
+                )
+                <% if (request.stream) { %>
+                for chunk in client.stream(<%- JSON.stringify(request.messages) %>):
+                  if chunk.additional_kwargs and "reasoning_content" in chunk.additional_kwargs:
+                    print(chunk.additional_kwargs["reasoning_content"], end="")
+                  print(chunk.content, end="")
+                <% } else { %>
+                response = client.invoke(<%- JSON.stringify(request.messages) %>)
+                if response.additional_kwargs and "reasoning_content" in response.additional_kwargs:
+                  print(response.additional_kwargs["reasoning_content"])
+                print(response.content)
+                <% } %>
+
+              node.js: |-
+                import OpenAI from 'openai';
+
+                const openai = new OpenAI({
+                  apiKey: '$NVIDIA_API_KEY',
+                  baseURL: 'https://integrate.api.nvidia.com/v1',
+                })
+                 <% if (request.tools) { %>
+                async function main() {
+                  const completion = await openai.chat.completions.create({
+                    model: "<%- request.model %>",
+                    messages: <%- JSON.stringify(request.messages) %>,
+                    temperature: <%- request.temperature %>,
+                    top_p: <%- request.top_p %>,
+                    max_tokens: <%- request.max_tokens %>,
+                    stream: <%- request.stream %>,
+                    <% if (request.tools) { %>tools: <%- JSON.stringify(request.tools) %>,<% } %>
+                    <% if (request.tool_choice) { %>tool_choice: <%- JSON.stringify(request.tool_choice) %>,<% } %>
+                  })<% } else { %>
+                async function main() {
+                  const completion = await openai.chat.completions.create({
+                    model: "<%- request.model %>",
+                    messages: <%- JSON.stringify(request.messages) %>,
+                    temperature: <%- request.temperature %>,
+                    top_p: <%- request.top_p %>,
+                    max_tokens: <%- request.max_tokens %>,
+                    stream: <%- request.stream %>
+                  })<% } %>
+                   <% if (request.stream) { %>
+                  for await (const chunk of completion) {
+                    const reasoning = chunk.choices[0]?.delta?.reasoning_content;
+                    if (reasoning) process.stdout.write(reasoning);
+                    process.stdout.write(chunk.choices[0]?.delta?.content || '')
+                  }
+                  <% } else { %>
+                  const reasoning = completion.choices[0]?.message?.reasoning_content;
+                  if (reasoning) process.stdout.write(reasoning + "\n");
+                  process.stdout.write(completion.choices[0]?.message?.content);
+                  <% } %>
+                }
+
+                main();
+              curl: |-
+                <% if (request.tools) { %>
+                  "curl https://integrate.api.nvidia.com/v1/chat/completions \\\n
+                    -H \"Content-Type: application/json\" \\\n
+                    -H \"Authorization: Bearer $NVIDIA_API_KEY\" \\\n
+                    -d '{\n
+                      \"model\": \"openai/gpt-oss-20b\",\n
+                      \"messages\": <%- JSON.stringify(request.messages).replaceAll(\"'\", \"'\\\"'\\\"'\") %>,\n
+                      \"temperature\": <%- request.temperature %>,\n
+                      \"top_p\": <%- request.top_p %>,\n
+                      \"max_tokens\": <%- request.max_tokens %>,\n
+                      \"stream\": <%- request.stream %>
+                      <% if (request.tools) { %>,\n    \"tools\": <%- JSON.stringify(request.tools).replaceAll(\"'\", \"'\\\"'\\\"'\") %><% } %>
+                      <% if (request.tool_choice) { %>,\n    \"tool_choice\": <%- JSON.stringify(request.tool_choice).replaceAll(\"'\", \"'\\\"'\\\"'\") %><% } %>
+                    }'\n"<% } else { %>
+                  "curl https://integrate.api.nvidia.com/v1/chat/completions \\\n
+                    -H \"Content-Type: application/json\" \\\n
+                    -H \"Authorization: Bearer $NVIDIA_API_KEY\" \\\n
+                    -d '{\n
+                      \"model\": \"openai/gpt-oss-20b\",\n
+                      \"messages\": <%- JSON.stringify(request.messages).replaceAll(\"'\", \"'\\\"'\\\"'\") %>,\n
+                      \"temperature\": <%- request.temperature %>,\n
+                      \"top_p\": <%- request.top_p %>,\n
+                      \"max_tokens\": <%- request.max_tokens %>,\n
+                      \"stream\": <%- request.stream %>
+                      <% if (request.tools) { %>,\n    \"tools\": <%- JSON.stringify(request.tools).replaceAll(\"'\", \"'\\\"'\\\"'\") %><% } %>
+                      <% if (request.tool_choice) { %>,\n    \"tool_choice\": <%- JSON.stringify(request.tool_choice).replaceAll(\"'\", \"'\\\"'\\\"'\") %><% } %>
+                    }'\n"<% } %>
+
+            response: |
+              {
+                "id": "chatcmpl-123",
+                "object": "chat.completion",
+                "created": 1677652288,
+                "model": "openai/gpt-oss-20b",
+                "system_fingerprint": "fp_44709d6fcb",
+                "choices": [{
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "\n\nHello there, how may I assist you today?",
+                  },
+                  "finish_reason": "stop"
+                }],
+                "usage": {
+                  "prompt_tokens": 9,
+                  "completion_tokens": 12,
+                  "total_tokens": 21
+                }
+              }
+security:
+  - Token: []
+components:
+  securitySchemes:
+    Token:
+      type: http
+      scheme: bearer
+  schemas:
+    Errors:
+      properties:
+        type:
+          type: string
+          description: Error type
+        title:
+          type: string
+          description: Error title
+        status:
+          type: integer
+          description: Error status code
+        detail:
+          type: string
+          description: Detailed information about the error
+        instance:
+          type: string
+          description: Function instance used to invoke the request
+        requestId:
+          type: string
+          format: uuid
+          description: UUID of the request
+      type: object
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - instance
+        - requestId
+      title: InvokeError
+    ChatCompletion:
+      properties:
+        id:
+          description: A unique identifier for the completion.
+          format: uuid
+          title: Id
+          type: string
+        choices:
+          description:
+            The list of completion choices the model generated for the
+            input prompt.
+          items:
+            "$ref": "#/components/schemas/Choice"
+          title: Choices
+          type: array
+        usage:
+          allOf:
+            - "$ref": "#/components/schemas/Usage"
+          description: Usage statistics for the completion request.
+      required:
+        - id
+        - choices
+        - usage
+      title: ChatCompletion
+      type: object
+    ChatCompletionChunk:
+      properties:
+        id:
+          description: A unique identifier for the completion.
+          format: uuid
+          title: Id
+          type: string
+        choices:
+          description:
+            The list of completion choices the model generated for the
+            input prompt.
+          items:
+            "$ref": "#/components/schemas/ChoiceChunk"
+          title: Choices
+          type: array
+      required:
+        - id
+        - choices
+      title: ChatCompletionChunk
+      type: object
+    ChatRequest:
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          title: Model
+          default: openai/gpt-oss-20b
+        messages:
+          description:
+            A list of messages comprising the conversation so far. The
+            roles of the messages must be alternating between `user` and `assistant`.
+            The last input message should have role `user`. A message with the the
+            `system` role is optional, and must be the very first message if it is
+            present; `context` is also optional, but must come before a user question.
+          examples:
+            - - content: I am going to Paris, what should I see?
+                role: user
+          items:
+            "$ref": "#/components/schemas/Message"
+          title: Messages
+          type: array
+        temperature:
+          default: 0.6
+          description:
+            The sampling temperature to use for text generation. The higher
+            the temperature value is, the less deterministic the output text will
+            be. It is not recommended to modify both temperature and top_p in the
+            same call.
+          maximum: 1
+          minimum: 0
+          title: Temperature
+          type: number
+        top_p:
+          default: 0.7
+          description:
+            The top-p sampling mass used for text generation. The top-p
+            value determines the probability mass that is sampled at sampling time.
+            For example, if top_p = 0.2, only the most likely tokens (summing to 0.2
+            cumulative probability) will be sampled. It is not recommended to modify
+            both temperature and top_p in the same call.
+          maximum: 1
+          exclusiveMinimum: 0
+          title: Top P
+          type: number
+        frequency_penalty:
+          type: number
+          maximum: 2
+          minimum: -2
+          default: 0
+          title: Frequency Penalty
+          description: "Indicates how much to penalize new tokens based on their existing frequency in the text so far, decreasing model likelihood to repeat the same line verbatim."
+        presence_penalty:
+          type: number
+          maximum: 2
+          minimum: -2
+          default: 0
+          title: Presence Penalty
+          description: "Positive values penalize new tokens based on whether they appear in the text so far, increasing model likelihood to talk about new topics."
+        max_tokens:
+          default: 4096
+          description:
+            The maximum number of tokens to generate in any given call.
+            Note that the model is not aware of this value, and generation will simply
+            stop at the number of tokens specified.
+          maximum: 4096
+          minimum: 1
+          title: Max Tokens
+          type: integer
+        stream:
+          default: false
+          description:
+            "If set, partial message deltas will be sent. Tokens will be
+            sent as data-only server-sent events (SSE) as they become available (JSON
+            responses are prefixed by `data: `), with the stream terminated by a `data:
+            [DONE]` message."
+          title: Stream
+          type: boolean
+        stop:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: string
+            - type: "null"
+          title: Stop
+          description:
+            A string or a list of strings where the API will stop generating further
+            tokens. The returned text will not contain the stop sequence.
+        reasoning_effort:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+          default: medium
+          title: Reasoning Effort
+          description:
+            Controls the effort level for reasoning in reasoning-capable models.
+            'low' provides basic reasoning, 'medium' provides balanced reasoning,
+            and 'high' provides detailed step-by-step reasoning.
+        tools:
+          type: array
+          items:
+            "$ref": "#/components/schemas/Tool"
+          title: Tools
+          description: A list of tools the model may call.
+        tool_choice:
+          anyOf:
+            - type: string
+              enum: ["none", "auto", "required"]
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: ["function"]
+                function:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                  required: ["name"]
+              required: ["type", "function"]
+          title: Tool Choice
+          description: Controls which (if any) tool is called by the model.
+      required:
+        - messages
+      title: ChatRequest
+      type: object
+    Choice:
+      properties:
+        index:
+          description: The index of the choice in the list of choices (always 0).
+          title: Index
+          type: integer
+        message:
+          allOf:
+            - "$ref": "#/components/schemas/Message"
+          description: A chat completion message generated by the model.
+          examples:
+            - content:
+                Ah, Paris, the City of Light! There are so many amazing things
+                to see and do in this beautiful city ...
+              role: assistant
+        finish_reason:
+          anyOf:
+            - enum:
+                - stop
+                - length
+              type: string
+            - type: "null"
+          default:
+          description:
+            The reason the model stopped generating tokens. This will be
+            `stop` if the model hit a natural stop point or a provided stop sequence,
+            or `length` if the maximum number of tokens specified in the request was
+            reached.
+          examples:
+            - stop
+          title: Finish Reason
+      required:
+        - index
+        - message
+      title: Choice
+      type: object
+    ChoiceChunk:
+      properties:
+        index:
+          description: The index of the choice in the list of choices (always 0).
+          title: Index
+          type: integer
+        delta:
+          allOf:
+            - "$ref": "#/components/schemas/Message"
+          description: A chat completion delta generated by streamed model responses.
+          examples:
+            - content: Ah,
+              role: assistant
+        finish_reason:
+          anyOf:
+            - enum:
+                - stop
+                - length
+              type: string
+            - type: "null"
+          default:
+          description:
+            The reason the model stopped generating tokens. This will be
+            `stop` if the model hit a natural stop point or a provided stop sequence,
+            or `length` if the maximum number of tokens specified in the request was
+            reached. Will be `null` if the model has not finished generating.
+          title: Finish Reason
+      required:
+        - index
+        - delta
+      title: ChoiceChunk
+      type: object
+    Message:
+      additionalProperties: false
+      properties:
+        role:
+          description: The role of the message author.
+          enum:
+            - user
+            - assistant
+          title: Role
+          type: string
+        content:
+          description: The contents of the message.
+          title: Content
+          anyOf:
+            - type: string
+            - type: "null"
+      required:
+        - role
+        - content
+      title: Message
+      type: object
+    Usage:
+      properties:
+        completion_tokens:
+          description: Number of tokens in the generated completion.
+          examples:
+            - 25
+          title: Completion Tokens
+          type: integer
+        prompt_tokens:
+          description: Number of tokens in the prompt.
+          examples:
+            - 9
+          title: Prompt Tokens
+          type: integer
+        total_tokens:
+          description: Total number of tokens used in the request (prompt + completion).
+          examples:
+            - 34
+          title: Total Tokens
+          type: integer
+      required:
+        - completion_tokens
+        - prompt_tokens
+        - total_tokens
+      title: Usage
+      type: object
+    Tool:
+      properties:
+        type:
+          type: string
+          enum: ["function"]
+          description: The type of the tool.
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+              description: The name of the function to be called.
+            description:
+              type: string
+              description: A description of what the function does.
+            parameters:
+              type: object
+              description: The parameters the function accepts, described as a JSON Schema object.
+          required: ["name"]
+      required: ["type", "function"]
+      title: Tool
+      type: object
+    ResponsesRequest:
+      properties:
+        model:
+          type: string
+          title: Model
+          description: The model to use for generating the response.
+        input:
+          type: array
+          items:
+            "$ref": "#/components/schemas/ResponseInputItem"
+          title: Input
+          description: The input messages for the conversation.
+        reasoning_effort:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+          default: medium
+          title: Reasoning Effort
+          description: Controls the effort level for reasoning in reasoning-capable models.
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          maximum: 4096
+          default: 1000
+          title: Max Output Tokens
+          description: The maximum number of output tokens to generate.
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1.0
+          title: Temperature
+          description: Controls randomness in the response generation.
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          title: Top P
+          description: Controls nucleus sampling probability mass.
+        stream:
+          type: boolean
+          default: false
+          title: Stream
+          description: Whether to stream the response as server-sent events.
+        tools:
+          type: array
+          items:
+            "$ref": "#/components/schemas/Tool"
+          title: Tools
+          description: A list of tools the model may call.
+        tool_choice:
+          anyOf:
+            - type: string
+              enum: ["auto", "none", "required"]
+            - type: object
+          title: Tool Choice
+          description: Controls which (if any) tool is called by the model.
+        instructions:
+          type: string
+          title: Instructions
+          description: System instructions for the conversation.
+        metadata:
+          type: object
+          title: Metadata
+          description: Additional metadata for the request.
+      required:
+        - model
+        - input
+      title: ResponsesRequest
+      type: object
+    ResponseInputItem:
+      properties:
+        type:
+          type: string
+          enum: ["message"]
+          description: The type of input item.
+        role:
+          type: string
+          enum: ["user", "assistant", "system"]
+          description: The role of the message author.
+        content:
+          type: array
+          items:
+            "$ref": "#/components/schemas/ContentItem"
+          description: The content of the message.
+      required:
+        - type
+        - role
+        - content
+      title: ResponseInputItem
+      type: object
+    ContentItem:
+      properties:
+        type:
+          type: string
+          enum: ["input_text", "text"]
+          description: The type of content.
+        text:
+          type: string
+          description: The text content.
+      required:
+        - type
+        - text
+      title: ContentItem
+      type: object
+    ResponsesResponse:
+      properties:
+        id:
+          type: string
+          description: A unique identifier for the response.
+        object:
+          type: string
+          enum: ["response"]
+          description: The object type.
+        created_at:
+          type: integer
+          description: The Unix timestamp when the response was created.
+        status:
+          type: string
+          enum: ["in_progress", "completed", "failed"]
+          description: The status of the response.
+        model:
+          type: string
+          description: The model used for generating the response.
+        output:
+          type: array
+          items:
+            "$ref": "#/components/schemas/ResponseOutputItem"
+          description: The output items from the response.
+        reasoning:
+          type: object
+          properties:
+            effort:
+              type: string
+              enum: ["low", "medium", "high"]
+            summary:
+              type: string
+          description: Reasoning information and summary.
+        usage:
+          "$ref": "#/components/schemas/Usage"
+          description: Usage statistics for the response.
+        temperature:
+          type: number
+          description: The temperature used for generation.
+        top_p:
+          type: number
+          description: The top_p used for generation.
+        max_output_tokens:
+          type: integer
+          description: The maximum output tokens setting.
+        metadata:
+          type: object
+          description: Additional metadata.
+      required:
+        - id
+        - object
+        - created_at
+        - status
+        - model
+        - output
+      title: ResponsesResponse
+      type: object
+    ResponseOutputItem:
+      properties:
+        id:
+          type: string
+          description: A unique identifier for the output item.
+        type:
+          type: string
+          enum: ["message"]
+          description: The type of output item.
+        role:
+          type: string
+          enum: ["assistant"]
+          description: The role of the output author.
+        content:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OutputContentItem"
+          description: The content of the output.
+      required:
+        - id
+        - type
+        - role
+        - content
+      title: ResponseOutputItem
+      type: object
+    OutputContentItem:
+      properties:
+        type:
+          type: string
+          enum: ["text"]
+          description: The type of output content.
+        text:
+          type: string
+          description: The text content.
+      required:
+        - type
+        - text
+      title: OutputContentItem
+      type: object
+    ResponsesStreamChunk:
+      properties:
+        id:
+          type: string
+          description: A unique identifier for the response.
+        object:
+          type: string
+          enum: ["response.delta"]
+          description: The object type for streaming chunks.
+        delta:
+          type: object
+          properties:
+            output:
+              type: array
+              items:
+                "$ref": "#/components/schemas/ResponseOutputItem"
+          description: The incremental changes in this chunk.
+      required:
+        - id
+        - object
+        - delta
+      title: ResponsesStreamChunk
+      type: object
