@@ -765,7 +765,6 @@ components:
             A string or a list of strings where the API will stop generating further
             tokens. The returned text will not contain the stop sequence.
         reasoning_effort:
-          type: string
           enum:
             - low
             - medium
@@ -954,7 +953,6 @@ components:
           title: Input
           description: The input messages for the conversation.
         reasoning_effort:
-          type: string
           enum:
             - low
             - medium

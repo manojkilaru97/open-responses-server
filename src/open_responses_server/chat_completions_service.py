@@ -6,8 +6,7 @@ from open_responses_server.common.config import logger, OPENAI_BASE_URL_INTERNAL
 from open_responses_server.common.mcp_manager import mcp_manager, serialize_tool_result
 
 async def _handle_non_streaming_request(client: LLMClient, request_data: dict):
-    """Handles a non-streaming chat completions request with potential tool calls."""
-    messages = list(request_data.get("messages", []))
+    """Handles a non-streaming chat completions request - simple passthrough."""
     current_request_data = request_data.copy()
     
     # Remove reasoning parameter if it has null values
@@ -17,178 +16,60 @@ async def _handle_non_streaming_request(client: LLMClient, request_data: dict):
             current_request_data.pop("reasoning", None)
             logger.info("[CHAT-COMPLETIONS-NON-STREAM] Removed reasoning parameter with null values")
     
-    for _ in range(MAX_TOOL_CALL_ITERATIONS):
-        current_request_data["messages"] = messages
-        current_request_data.pop("stream", None)
+    # Make a single request to vLLM and return the result
+    current_request_data.pop("stream", None)
 
-        try:
-            response = await client.post(
-                "/v1/chat/completions",
-                json=current_request_data,
-                timeout=120.0
-            )
-            response.raise_for_status()
-            response_data = response.json()
-            
-            choice = response_data.get("choices", [])[0]
-            message = choice.get("message", {})
-            messages.append(message)
+    try:
+        response = await client.post(
+            "/v1/chat/completions",
+            json=current_request_data,
+            timeout=120.0
+        )
+        response.raise_for_status()
+        response_data = response.json()
+        
+        choice = response_data.get("choices", [])[0]
+        
+        if choice.get("finish_reason") == "tool_calls":
+            tool_calls = choice.get("message", {}).get("tool_calls", [])
+            logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] Returning {len(tool_calls)} tool calls to client for execution")
+        
+        # Return the response data directly - let client handle tool execution
+        return response_data
 
-            if choice.get("finish_reason") == "tool_calls":
-                tool_calls = message.get("tool_calls", [])
-                tool_results_messages = []
-                
-                logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] Processing {len(tool_calls)} tool calls")
-                
-                for tool_call in tool_calls:
-                    function_call = tool_call.get("function", {})
-                    tool_name = function_call.get("name")
-                    tool_call_id = tool_call.get("id")
-
-                    logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] Processing tool call: {tool_name} (id: {tool_call_id})")
-
-                    if mcp_manager.is_mcp_tool(tool_name):
-                        logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] Executing MCP tool: {tool_name}")
-                        try:
-                            arguments = json.loads(function_call.get("arguments", "{}"))
-                            logger.debug(f"[CHAT-COMPLETIONS-NON-STREAM] Tool arguments: {arguments}")
-                            result = await mcp_manager.execute_mcp_tool(tool_name, arguments)
-                            logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] ✓ Tool {tool_name} executed successfully")
-                            logger.debug(f"[CHAT-COMPLETIONS-NON-STREAM] Tool result: {result}")
-                            tool_content = serialize_tool_result(result)
-                        except Exception as e:
-                            logger.error(f"[CHAT-COMPLETIONS-NON-STREAM] ✗ Error executing tool {tool_name}: {e}")
-                            tool_content = json.dumps({"error": f"Error executing tool: {e}"})
-                    else:
-                        logger.warning(f"[CHAT-COMPLETIONS-NON-STREAM] Tool '{tool_name}' is not a registered MCP tool.")
-                        tool_content = json.dumps({"error": f"Tool '{tool_name}' is not a registered MCP tool."})
-
-                    tool_results_messages.append({
-                        "tool_call_id": tool_call_id,
-                        "role": "tool",
-                        "content": tool_content,
-                    })
-                    
-                logger.info(f"[CHAT-COMPLETIONS-NON-STREAM] Added {len(tool_results_messages)} tool result messages")
-                messages.extend(tool_results_messages)
-                continue
-            else:
-                # Log the response for debugging
-                logger.info(f"Final response data: {response_data}")
-                
-                # Return the response data directly - let FastAPI handle JSON serialization
-                return response_data
-
-        except Exception as e:
-            logger.error(f"Error during non-streaming chat completion: {e}")
-            return {"error": str(e)}
-    
-    return {"error": "Max tool call iterations reached"}
+    except Exception as e:
+        logger.error(f"Error during non-streaming chat completion: {e}")
+        return {"error": str(e)}
 
 
 async def _handle_streaming_request(client: LLMClient, request_data: dict) -> StreamingResponse:
-    """Handles a streaming chat completions request with potential tool calls."""
-    messages = list(request_data.get("messages", []))
-    non_stream_request_data = request_data.copy()
-    non_stream_request_data["stream"] = False
+    """Handles a streaming chat completions request - simple passthrough."""
+    stream_request_data = request_data.copy()
+    stream_request_data["stream"] = True
 
     # Remove reasoning parameter if it has null values
-    if "reasoning" in non_stream_request_data:
-        reasoning = non_stream_request_data["reasoning"]
+    if "reasoning" in stream_request_data:
+        reasoning = stream_request_data["reasoning"]
         if isinstance(reasoning, dict) and all(v is None for v in reasoning.values()):
-            non_stream_request_data.pop("reasoning", None)
-            logger.info("[CHAT-COMPLETIONS-STREAM] Removed reasoning parameter with null values from non-stream request")
+            stream_request_data.pop("reasoning", None)
+            logger.info("[CHAT-COMPLETIONS-STREAM] Removed reasoning parameter with null values")
 
-    for _ in range(MAX_TOOL_CALL_ITERATIONS):
+    # Just proxy the stream directly - no tool call processing
+    async def stream_proxy():
         try:
-            # Make a non-streaming request first to check for tool calls
-            response = await client.post("/v1/chat/completions", json={**non_stream_request_data, "messages": messages}, timeout=120.0)
-            response.raise_for_status()
-            response_data = response.json()
-            
-            choice = response_data["choices"][0]
-            message = choice["message"]
-
-            if choice.get("finish_reason") == "tool_calls":
-                messages.append(message)
-                tool_calls = message.get("tool_calls", [])
-                tool_results_messages = []
-                
-                logger.info(f"[CHAT-COMPLETIONS-STREAM] Processing {len(tool_calls)} tool calls in streaming mode")
-                
-                for tool_call in tool_calls:
-                    function_call = tool_call.get("function", {})
-                    tool_name = function_call.get("name")
-                    tool_call_id = tool_call.get("id")
-
-                    logger.info(f"[CHAT-COMPLETIONS-STREAM] Processing tool call: {tool_name} (id: {tool_call_id})")
-
-                    if mcp_manager.is_mcp_tool(tool_name):
-                        logger.info(f"[CHAT-COMPLETIONS-STREAM] Executing MCP tool: {tool_name}")
-                        try:
-                            arguments = json.loads(function_call.get("arguments", "{}"))
-                            logger.debug(f"[CHAT-COMPLETIONS-STREAM] Tool arguments: {arguments}")
-                            result = await mcp_manager.execute_mcp_tool(tool_name, arguments)
-                            logger.info(f"[CHAT-COMPLETIONS-STREAM] ✓ Tool {tool_name} executed successfully")
-                            logger.debug(f"[CHAT-COMPLETIONS-STREAM] Tool result: {result}")
-                            #result is serlized as: "meta=None content=[TextContent(type='text', text="[{'name': 'listings'}]", annotations=None)] isError=False"
-                            # so we need to convert it to json
-                            tool_content = serialize_tool_result(result)
-                        except Exception as e:
-                            logger.error(f"[CHAT-COMPLETIONS-STREAM] ✗ Error executing tool {tool_name}: {e}")
-                            tool_content = json.dumps({"error": f"Error executing tool: {e}"})
-                    else:
-                        logger.warning(f"[CHAT-COMPLETIONS-STREAM] Tool '{tool_name}' is not a registered MCP tool.")
-                        tool_content = json.dumps({"error": f"Tool '{tool_name}' is not a registered MCP tool."})
-
-                    tool_results_messages.append({
-                        "tool_call_id": tool_call_id,
-                        "role": "tool",
-                        "content": tool_content,
-                    })
-                    
-                logger.info(f"[CHAT-COMPLETIONS-STREAM] Added {len(tool_results_messages)} tool result messages")
-                messages.extend(tool_results_messages)
-                continue
-            else:
-                # No tool calls, so we can stream the final response
-                messages.append(message)
-                stream_request_data = request_data.copy()
-                stream_request_data["messages"] = messages
-                stream_request_data["stream"] = True
-
-                # Remove reasoning parameter if it has null values
-                if "reasoning" in stream_request_data:
-                    reasoning = stream_request_data["reasoning"]
-                    if isinstance(reasoning, dict) and all(v is None for v in reasoning.values()):
-                        stream_request_data.pop("reasoning", None)
-                        logger.info("[CHAT-COMPLETIONS-STREAM] Removed reasoning parameter with null values from final stream request")
-
-                async def stream_proxy():
-                    try:
-                        async with client.stream(
-                            "POST",
-                            "/v1/chat/completions",
-                            json=stream_request_data,
-                            timeout=120.0
-                        ) as stream_response:
-                            async for chunk in stream_response.aiter_bytes():
-                                yield chunk
-                    except Exception as e:
-                        logger.error(f"Error during chat completions stream proxy: {e}")
-                        yield f"data: {json.dumps({'error': str(e)})}\n\n".encode()
-
-                return StreamingResponse(stream_proxy(), media_type="text/event-stream")
-
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json=stream_request_data,
+                timeout=120.0
+            ) as stream_response:
+                async for chunk in stream_response.aiter_bytes():
+                    yield chunk
         except Exception as e:
-            logger.error(f"Error during streaming chat completion: {e}")
-            async def error_stream():
-                yield f"data: {json.dumps({'error': str(e)})}\n\n".encode()
-            return StreamingResponse(error_stream(), media_type="text/event-stream", status_code=500)
-    
-    async def final_error_stream():
-        yield f"data: {json.dumps({'error': 'Max tool call iterations reached'})}\n\n".encode()
-    return StreamingResponse(final_error_stream(), media_type="text/event-stream", status_code=500)
+            logger.error(f"Error during chat completions stream proxy: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n".encode()
+
+    return StreamingResponse(stream_proxy(), media_type="text/event-stream")
 
 
 async def handle_chat_completions(request: Request):
